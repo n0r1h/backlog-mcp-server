@@ -12,12 +12,10 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-  CallToolRequestSchema,
   ListResourcesRequestSchema,
-  ListToolsRequestSchema,
   ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
+  ErrorCode,
+  McpError
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from 'dotenv';
 import { BacklogClient } from './services/backlog-client.js';
@@ -56,12 +54,20 @@ const server = new Server(
   },
   {
     capabilities: {
-      resources: {},
-      tools: {},
-      prompts: {},
+      resources: {}
     },
   }
 );
+
+// エラーハンドリングのセットアップ
+server.onerror = (error) => {
+  console.error("[MCP Error]", error);
+};
+
+process.on('SIGINT', async () => {
+  await server.close();
+  process.exit(0);
+});
 
 /**
  * Handler for listing available notes as resources.
@@ -94,7 +100,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
     return { resources };
   } catch (error) {
     console.error('Error fetching Backlog resources:', error);
-    throw new Error('Failed to fetch Backlog resources');
+    throw new McpError(ErrorCode.InternalError, 'Failed to fetch Backlog resources');
   }
 });
 
@@ -132,7 +138,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       case 'project': {
         const projectId = paths[1];
         if (!projectId) {
-          throw new Error('Project ID is required');
+          throw new McpError(ErrorCode.InvalidRequest, 'Project ID is required');
         }
 
         if (paths.length === 2) {
@@ -148,26 +154,21 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         } else if (paths[2] === 'issues') {
           // プロジェクトの課題一覧を取得
           console.log(`Fetching issues for project ${projectId}`); // デバッグログを追加
-          try {
-            const issues = await backlogClient.getIssues(parseInt(projectId));
-            content = {
-              total: issues.length,
-              issues: issues.map(issue => ({
-                id: issue.id,
-                issueKey: issue.issueKey,
-                summary: issue.summary,
-                status: issue.status,
-                _links: {
-                  self: `backlog:///issue/${issue.id}`,
-                  comments: `backlog:///issue/${issue.id}/comments`,
-                  project: `backlog:///project/${issue.projectId}`
-                }
-              }))
-            };
-          } catch (error) {
-            console.error('Error fetching issues:', error);
-            throw new Error(`Failed to fetch issues for project ${projectId}`);
-          }
+          const issues = await backlogClient.getIssues(parseInt(projectId));
+          content = {
+            total: issues.length,
+            issues: issues.map(issue => ({
+              id: issue.id,
+              issueKey: issue.issueKey,
+              summary: issue.summary,
+              status: issue.status,
+              _links: {
+                self: `backlog:///issue/${issue.id}`,
+                comments: `backlog:///issue/${issue.id}/comments`,
+                project: `backlog:///project/${issue.projectId}`
+              }
+            }))
+          };
         }
         break;
       }
@@ -203,7 +204,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     }
 
     if (!content) {
-      throw new Error(`Resource ${request.params.uri} not found`);
+      throw new McpError(ErrorCode.MethodNotFound, `Resource ${request.params.uri} not found`);
     }
 
     return {
@@ -215,123 +216,11 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     };
   } catch (error) {
     console.error(`Error reading resource ${request.params.uri}:`, error);
-    throw new Error(`Failed to read resource ${request.params.uri}`);
-  }
-});
-
-/**
- * Handler that lists available tools.
- * Exposes a single "create_note" tool that lets clients create new notes.
- */
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "create_note",
-        description: "Create a new note",
-        inputSchema: {
-          type: "object",
-          properties: {
-            title: {
-              type: "string",
-              description: "Title of the note"
-            },
-            content: {
-              type: "string",
-              description: "Text content of the note"
-            }
-          },
-          required: ["title", "content"]
-        }
-      }
-    ]
-  };
-});
-
-/**
- * Handler for the create_note tool.
- * Creates a new note with the provided title and content, and returns success message.
- */
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  switch (request.params.name) {
-    case "create_note": {
-      const title = String(request.params.arguments?.title);
-      const content = String(request.params.arguments?.content);
-      if (!title || !content) {
-        throw new Error("Title and content are required");
-      }
-
-      const id = String(Object.keys(notes).length + 1);
-      notes[id] = { title, content };
-
-      return {
-        content: [{
-          type: "text",
-          text: `Created note ${id}: ${title}`
-        }]
-      };
+    if (error instanceof McpError) {
+      throw error;
     }
-
-    default:
-      throw new Error("Unknown tool");
+    throw new McpError(ErrorCode.InternalError, `Failed to read resource ${request.params.uri}`);
   }
-});
-
-/**
- * Handler that lists available prompts.
- * Exposes a single "summarize_notes" prompt that summarizes all notes.
- */
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
-  return {
-    prompts: [
-      {
-        name: "summarize_notes",
-        description: "Summarize all notes",
-      }
-    ]
-  };
-});
-
-/**
- * Handler for the summarize_notes prompt.
- * Returns a prompt that requests summarization of all notes, with the notes' contents embedded as resources.
- */
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-  if (request.params.name !== "summarize_notes") {
-    throw new Error("Unknown prompt");
-  }
-
-  const embeddedNotes = Object.entries(notes).map(([id, note]) => ({
-    type: "resource" as const,
-    resource: {
-      uri: `note:///${id}`,
-      mimeType: "text/plain",
-      text: note.content
-    }
-  }));
-
-  return {
-    messages: [
-      {
-        role: "user",
-        content: {
-          type: "text",
-          text: "Please summarize the following notes:"
-        }
-      },
-      ...embeddedNotes.map(note => ({
-        role: "user" as const,
-        content: note
-      })),
-      {
-        role: "user",
-        content: {
-          type: "text",
-          text: "Provide a concise summary of all the notes above."
-        }
-      }
-    ]
-  };
 });
 
 /**
@@ -341,6 +230,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  console.error("Backlog MCP server running on stdio");
 }
 
 main().catch((error) => {
