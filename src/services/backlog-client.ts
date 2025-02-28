@@ -10,11 +10,19 @@ export class BacklogClient {
     this.apiKey = config.apiKey;
   }
 
-  private async request<T>(path: string): Promise<T> {
-    const response = await axios.get(`${this.baseUrl}${path}`, {
-      params: { apiKey: this.apiKey }
-    });
-    return response.data;
+  private async request<T>(path: string, params: Record<string, any> = {}): Promise<T> {
+    try {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params: {
+          apiKey: this.apiKey,
+          ...params
+        }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Backlog API error:', error);
+      throw error;
+    }
   }
 
   async getProjects(): Promise<BacklogProject[]> {
@@ -26,14 +34,8 @@ export class BacklogClient {
   }
 
   async getIssues(projectId?: number): Promise<BacklogIssue[]> {
-    const params = projectId ? { projectId: projectId } : {};
-    const response = await axios.get(`${this.baseUrl}/issues`, {
-      params: {
-        ...params,
-        apiKey: this.apiKey
-      }
-    });
-    return response.data;
+    const params = projectId ? { 'projectId[]': projectId } : {};
+    return this.request<BacklogIssue[]>('/issues', params);
   }
 
   async getIssue(issueIdOrKey: string): Promise<BacklogIssue> {

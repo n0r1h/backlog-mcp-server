@@ -14,8 +14,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   ErrorCode,
-  McpError
+  McpError,
+  ListToolsRequestSchema,
+  CallToolRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from 'dotenv';
 import { BacklogClient } from './services/backlog-client.js';
@@ -54,7 +58,9 @@ const server = new Server(
   },
   {
     capabilities: {
-      resources: {}
+      resources: {},
+      prompts: {},
+      tools: {}  // ツール機能を有効化
     },
   }
 );
@@ -220,6 +226,227 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       throw error;
     }
     throw new McpError(ErrorCode.InternalError, `Failed to read resource ${request.params.uri}`);
+  }
+});
+
+// プロンプト一覧を提供するハンドラー
+server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  return {
+    prompts: [
+      {
+        name: "search_mcp_issues",
+        description: "MCPに関連する課題を検索して整理する"
+      }
+    ]
+  };
+});
+
+// プロンプトの内容を提供するハンドラー
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  if (request.params.name !== "search_mcp_issues") {
+    throw new McpError(ErrorCode.MethodNotFound, "Unknown prompt");
+  }
+
+  const projects = await backlogClient.getProjects();
+  const allIssues = await Promise.all(
+    projects.map(async project => {
+      const issues = await backlogClient.getIssues(project.id);
+      return issues.filter(issue => 
+        issue.summary.toLowerCase().includes('mcp') || 
+        issue.description.toLowerCase().includes('mcp')
+      );
+    })
+  );
+
+  const mcpIssues = allIssues.flat();
+  
+  const issueResources = mcpIssues.map(issue => ({
+    type: "resource" as const,
+    resource: {
+      uri: `backlog:///issue/${issue.id}`,
+      mimeType: "application/json",
+      text: JSON.stringify({
+        summary: issue.summary,
+        description: issue.description,
+        status: issue.status,
+        issueKey: issue.issueKey
+      }, null, 2)
+    }
+  }));
+
+  return {
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: "以下のMCPに関連する課題を分析し、現状と課題を整理してください："
+        }
+      },
+      ...issueResources.map(resource => ({
+        role: "user" as const,
+        content: resource
+      })),
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: "上記の課題について、以下の点を整理してください：\n1. 主な課題の分類\n2. 現在の進捗状況\n3. 残っている課題\n4. 次のアクションとして推奨される事項"
+        }
+      }
+    ]
+  };
+});
+
+// ツール一覧を提供するハンドラー
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "get_project_details",
+        description: "プロジェクトの詳細情報を取得",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectIdOrKey: {
+              type: "string",
+              description: "プロジェクトIDまたはプロジェクトキー"
+            }
+          },
+          required: ["projectIdOrKey"]
+        }
+      },
+      {
+        name: "get_project_issues",
+        description: "プロジェクトの課題一覧を取得",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "number",
+              description: "プロジェクトID"
+            },
+            keyword: {
+              type: "string",
+              description: "検索キーワード（オプション）"
+            }
+          },
+          required: ["projectId"]
+        }
+      },
+      {
+        name: "get_issue_with_comments",
+        description: "課題の詳細情報とコメントを取得",
+        inputSchema: {
+          type: "object",
+          properties: {
+            issueIdOrKey: {
+              type: "string",
+              description: "課題のIDまたはキー"
+            }
+          },
+          required: ["issueIdOrKey"]
+        }
+      }
+    ]
+  };
+});
+
+// ツールを実行するハンドラー
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  console.error("Received CallToolRequest:", request);
+  try {
+    if (!request.params.arguments) {
+      throw new Error("No arguments provided");
+    }
+
+    switch (request.params.name) {
+      case "get_project_details": {
+        const args = request.params.arguments as unknown as { projectIdOrKey: string };
+        if (!args.projectIdOrKey) {
+          throw new Error("Missing required argument: projectIdOrKey");
+        }
+
+        const project = await backlogClient.getProject(args.projectIdOrKey);
+        return {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({
+              ...project,
+              _links: {
+                self: `backlog:///project/${project.id}`,
+                issues: `backlog:///project/${project.id}/issues`
+              }
+            })
+          }]
+        };
+      }
+
+      case "get_project_issues": {
+        const args = request.params.arguments as unknown as { projectId: number, keyword?: string };
+        if (!args.projectId) {
+          throw new Error("Missing required argument: projectId");
+        }
+
+        const issues = await backlogClient.getIssues(args.projectId);
+        return {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({
+              total: issues.length,
+              issues: issues.map(issue => ({
+                ...issue,
+                _links: {
+                  self: `backlog:///issue/${issue.id}`
+                }
+              }))
+            })
+          }]
+        };
+      }
+
+      case "get_issue_with_comments": {
+        const args = request.params.arguments as unknown as { issueIdOrKey: string };
+        if (!args.issueIdOrKey) {
+          throw new Error("Missing required argument: issueIdOrKey");
+        }
+
+        const issue = await backlogClient.getIssue(args.issueIdOrKey);
+        const comments = await backlogClient.getComments(issue.id);
+        return {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({
+              issue: {
+                ...issue,
+                _links: {
+                  self: `backlog:///issue/${issue.id}`
+                }
+              },
+              comments: comments.map(comment => ({
+                ...comment,
+                _links: {
+                  self: `backlog:///issue/${issue.id}/comment/${comment.id}`
+                }
+              }))
+            })
+          }]
+        };
+      }
+
+      default:
+        throw new Error(`Unknown tool: ${request.params.name}`);
+    }
+  } catch (error) {
+    console.error("Error executing tool:", error);
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }]
+    };
   }
 });
 
