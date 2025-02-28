@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { BacklogConfig, BacklogProject, BacklogIssue, BacklogComment } from '../types/backlog.js';
+import { BacklogConfig, BacklogProject, BacklogIssue, BacklogComment, CreateIssueParams } from '../types/backlog.js';
 
 export class BacklogClient {
   private baseUrl: string;
@@ -10,14 +10,19 @@ export class BacklogClient {
     this.apiKey = config.apiKey;
   }
 
-  private async request<T>(path: string, params: Record<string, any> = {}): Promise<T> {
+  private async request<T>(path: string, params: Record<string, any> = {}, method: 'get' | 'post' = 'get', data?: any): Promise<T> {
     try {
-      const response = await axios.get(`${this.baseUrl}${path}`, {
-        params: {
-          apiKey: this.apiKey,
-          ...params
-        }
+      const config = {
+        params: method === 'get' ? { apiKey: this.apiKey, ...params } : { apiKey: this.apiKey },
+        data: method === 'post' ? data : undefined
+      };
+
+      const response = await axios({
+        method,
+        url: `${this.baseUrl}${path}`,
+        ...config
       });
+      
       return response.data;
     } catch (error) {
       console.error('Backlog API error:', error);
@@ -44,5 +49,9 @@ export class BacklogClient {
 
   async getComments(issueId: number): Promise<BacklogComment[]> {
     return this.request<BacklogComment[]>(`/issues/${issueId}/comments`);
+  }
+
+  async createIssue(params: CreateIssueParams): Promise<BacklogIssue> {
+    return this.request<BacklogIssue>('/issues', {}, 'post', params);
   }
 } 

@@ -23,6 +23,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from 'dotenv';
 import { BacklogClient } from './services/backlog-client.js';
+import { CreateIssueParams } from './types/backlog.js';
 
 /**
  * Type alias for a note object.
@@ -303,6 +304,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
+        name: "create_issue",
+        description: "Backlogに新しい課題を登録",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: {
+              type: "number",
+              description: "プロジェクトID"
+            },
+            summary: {
+              type: "string",
+              description: "課題のタイトル"
+            },
+            description: {
+              type: "string",
+              description: "課題の説明"
+            },
+            issueTypeId: {
+              type: "number",
+              description: "課題種別のID"
+            },
+            priorityId: {
+              type: "number",
+              description: "優先度のID (1: 低, 2: 中, 3: 高)"
+            },
+            startDate: {
+              type: "string",
+              description: "開始日 (YYYY-MM-DD形式)"
+            },
+            dueDate: {
+              type: "string",
+              description: "期限日 (YYYY-MM-DD形式)"
+            },
+            estimatedHours: {
+              type: "number",
+              description: "予定時間"
+            },
+            actualHours: {
+              type: "number",
+              description: "実績時間"
+            },
+            assigneeId: {
+              type: "number",
+              description: "担当者のID"
+            }
+          },
+          required: ["projectId", "summary", "issueTypeId", "priorityId"]
+        }
+      },
+      {
         name: "get_project_details",
         description: "プロジェクトの詳細情報を取得",
         inputSchema: {
@@ -361,6 +412,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     switch (request.params.name) {
+      case "create_issue": {
+        const args = request.params.arguments as unknown as CreateIssueParams;
+        if (!args.projectId || !args.summary || !args.issueTypeId || !args.priorityId) {
+          throw new Error("Missing required arguments for issue creation");
+        }
+
+        const issue = await backlogClient.createIssue(args);
+        return {
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({
+              ...issue,
+              _links: {
+                self: `backlog:///issue/${issue.id}`
+              }
+            })
+          }]
+        };
+      }
+
       case "get_project_details": {
         const args = request.params.arguments as unknown as { projectIdOrKey: string };
         if (!args.projectIdOrKey) {

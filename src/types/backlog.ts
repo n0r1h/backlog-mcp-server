@@ -32,4 +32,17 @@ export interface BacklogComment {
 export interface BacklogConfig {
   apiKey: string;
   spaceId: string;
+}
+
+export interface CreateIssueParams {
+  projectId: number;
+  summary: string;
+  issueTypeId: number;
+  priorityId: number;
+  description?: string;
+  startDate?: string;
+  dueDate?: string;
+  estimatedHours?: number;
+  actualHours?: number;
+  assigneeId?: number;
 } 
