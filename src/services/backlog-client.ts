@@ -54,4 +54,8 @@ export class BacklogClient {
   async createIssue(params: CreateIssueParams): Promise<BacklogIssue> {
     return this.request<BacklogIssue>('/issues', {}, 'post', params);
   }
+
+  async createComment(issueId: number, content: string): Promise<BacklogComment> {
+    return this.request<BacklogComment>(`/issues/${issueId}/comments`, {}, 'post', { content });
+  }
 } 
